@@ -11,7 +11,10 @@ import {
     CompletionItemKind,
     TextDocumentPositionParams,
     Hover,
-    MarkupKind
+    MarkupKind,
+    SignatureHelp,
+    SignatureInformation,
+    ParameterInformation
 } from 'vscode-languageserver/node.js';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -35,7 +38,10 @@ connection.onInitialize((params: InitializeParams) => {
                 resolveProvider: false,
                 triggerCharacters: ['.']
             },
-            hoverProvider: true
+            hoverProvider: true,
+            signatureHelpProvider: {
+                triggerCharacters: ['(', ',']
+            }
         }
     };
     return result;
@@ -79,6 +85,68 @@ connection.onCompletion((pos: TextDocumentPositionParams): CompletionItem[] => {
         detail: `Hank Standard Library: ${m.name}`,
         documentation: m.description
     }));
+});
+
+// Implement Signature Help
+connection.onSignatureHelp((params: TextDocumentPositionParams): SignatureHelp | null => {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return null;
+
+    const text = doc.getText();
+    const offset = doc.offsetAt(params.position);
+    const textBefore = text.substring(0, offset);
+
+    // Find the innermost unclosed function call
+    let parenDepth = 0;
+    let currentPos = textBefore.length - 1;
+    let commaCount = 0;
+
+    while (currentPos >= 0) {
+        const char = textBefore[currentPos];
+        if (char === ')') parenDepth++;
+        if (char === '(') {
+            if (parenDepth === 0) break;
+            parenDepth--;
+        }
+        if (char === ',' && parenDepth === 0) commaCount++;
+        currentPos--;
+    }
+
+    if (currentPos < 0) return null;
+
+    // Extract the task name before the '('
+    const nameMatch = textBefore.substring(0, currentPos).match(/([a-zA-Z_][a-zA-Z0-9_.]*)$/);
+    if (!nameMatch) return null;
+
+    const symbol = nameMatch[1];
+    let metadata;
+
+    if (symbol.includes('.')) {
+        const [modName, taskName] = symbol.split('.');
+        metadata = HANK_STDLIB_METADATA[modName]?.tasks[taskName];
+    }
+
+    if (metadata) {
+        const signature: SignatureInformation = {
+            label: metadata.signature,
+            documentation: {
+                kind: MarkupKind.Markdown,
+                value: metadata.description
+            },
+            parameters: metadata.parameters.map(p => ({
+                label: p.label,
+                documentation: p.description
+            }))
+        };
+
+        return {
+            signatures: [signature],
+            activeSignature: 0,
+            activeParameter: commaCount
+        };
+    }
+
+    return null;
 });
 
 // Implement Hover Documentation
