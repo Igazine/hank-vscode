@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "module": "NodeNext",
+        "target": "ES2022",
+        "moduleResolution": "NodeNext",
+        "lib": ["ES2022"],
+        "sourceMap": true,
+        "rootDir": ".",
+        "strict": true,
+        "skipLibCheck": true
+    },
+    "files": [],
+    "references": [
+        { "path": "./client" },
+        { "path": "./server" }
+    ]
+}

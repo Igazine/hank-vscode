@@ -1,0 +1,21 @@
+{
+    "compilerOptions": {
+        "module": "NodeNext",
+        "target": "ES2022",
+        "moduleResolution": "NodeNext",
+        "outDir": "./out",
+        "lib": ["ES2022"],
+        "sourceMap": true,
+        "rootDir": ".",
+        "strict": true,
+        "allowJs": true,
+        "skipLibCheck": true
+    },
+    "include": [
+        "src/**/*",
+        "vendor/hank-ts/src/**/*"
+    ],
+    "exclude": [
+        "node_modules"
+    ]
+}
