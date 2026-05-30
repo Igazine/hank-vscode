@@ -5,17 +5,19 @@ const vscode_languageserver_textdocument_1 = require("vscode-languageserver-text
 // Import Hank Core (using relative path to submodule source)
 const Lexer_js_1 = require("../vendor/hank-ts/src/Lexer.js");
 const Parser_js_1 = require("../vendor/hank-ts/src/Parser.js");
+// Import Metadata
+const metadata_js_1 = require("./metadata.js");
 const connection = (0, node_js_1.createConnection)(node_js_1.ProposedFeatures.all);
 const documents = new node_js_1.TextDocuments(vscode_languageserver_textdocument_1.TextDocument);
 connection.onInitialize((params) => {
     const result = {
         capabilities: {
             textDocumentSync: node_js_1.TextDocumentSyncKind.Incremental,
-            // Future phases:
-            // hoverProvider: true,
-            // completionProvider: {
-            //     resolveProvider: true
-            // }
+            completionProvider: {
+                resolveProvider: false,
+                triggerCharacters: ['.']
+            },
+            hoverProvider: true
         }
     };
     return result;
@@ -24,6 +26,89 @@ connection.onInitialize((params) => {
 // when the text document first opened or when its content has changed.
 documents.onDidChangeContent(change => {
     validateTextDocument(change.document);
+});
+// Implement Autocomplete
+connection.onCompletion((pos) => {
+    const doc = documents.get(pos.textDocument.uri);
+    if (!doc)
+        return [];
+    const text = doc.getText();
+    const offset = doc.offsetAt(pos.position);
+    // Check if we are after a dot
+    const textBefore = text.substring(0, offset);
+    const dotMatch = textBefore.match(/([a-zA-Z_][a-zA-Z0-9_]*)\.$/);
+    if (dotMatch) {
+        const moduleName = dotMatch[1];
+        const module = metadata_js_1.HANK_STDLIB_METADATA[moduleName];
+        if (module) {
+            return Object.values(module.tasks).map(t => ({
+                label: t.name,
+                kind: node_js_1.CompletionItemKind.Function,
+                detail: t.signature,
+                documentation: t.description
+            }));
+        }
+    }
+    // Suggest top-level modules
+    return Object.values(metadata_js_1.HANK_STDLIB_METADATA).map(m => ({
+        label: m.name,
+        kind: node_js_1.CompletionItemKind.Module,
+        detail: `Hank Standard Library: ${m.name}`,
+        documentation: m.description
+    }));
+});
+// Implement Hover Documentation
+connection.onHover((params) => {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc)
+        return null;
+    const text = doc.getText();
+    const offset = doc.offsetAt(params.position);
+    // Extract the symbol under cursor (either module.task or just identifier)
+    const lineText = text.split('\n')[params.position.line];
+    const charPos = params.position.character;
+    // Find boundaries of the word/symbol
+    let start = charPos;
+    while (start > 0 && /[a-zA-Z0-9_.]/.test(lineText[start - 1]))
+        start--;
+    let end = charPos;
+    while (end < lineText.length && /[a-zA-Z0-9_.]/.test(lineText[end]))
+        end++;
+    const symbol = lineText.substring(start, end);
+    // Handle module.task
+    if (symbol.includes('.')) {
+        const [modName, taskName] = symbol.split('.');
+        const metadata = metadata_js_1.HANK_STDLIB_METADATA[modName]?.tasks[taskName];
+        if (metadata) {
+            return {
+                contents: {
+                    kind: node_js_1.MarkupKind.Markdown,
+                    value: [
+                        `### \`${metadata.signature}\``,
+                        `---`,
+                        metadata.description,
+                        metadata.example ? `\n**Example:**\n\`\`\`hank\n${metadata.example}\n\`\`\`` : ''
+                    ].join('\n')
+                }
+            };
+        }
+    }
+    // Handle just module
+    const module = metadata_js_1.HANK_STDLIB_METADATA[symbol];
+    if (module) {
+        return {
+            contents: {
+                kind: node_js_1.MarkupKind.Markdown,
+                value: [
+                    `### Module: \`${module.name}\``,
+                    `---`,
+                    module.description,
+                    `\n**Tasks:** ${Object.keys(module.tasks).join(', ')}`
+                ].join('\n')
+            }
+        };
+    }
+    return null;
 });
 async function validateTextDocument(textDocument) {
     const text = textDocument.getText();
