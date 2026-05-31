@@ -55,13 +55,13 @@ class LSPResource extends Resource {
         this.content = fs.readFileSync(filePath, 'utf-8');
     }
     resolve(rawPath: string) {
-        const currentPath = fileURLToPath(this.id);
+        const currentPath = this.id.startsWith('file://') ? fileURLToPath(this.id) : process.cwd();
         const parentDir = path.dirname(currentPath);
         let targetPath = path.resolve(parentDir, rawPath);
         if (!targetPath.endsWith('.hank')) targetPath += '.hank';
         
         // Convert path back to URI for the Resource ID
-        const targetUri = `file://${targetPath}`;
+        const targetUri = targetPath.startsWith('/') ? `file://${targetPath}` : `file:///${targetPath.replace(/\\/g, '/')}`;
         return new LSPResource(targetUri);
     }
 }
@@ -320,19 +320,32 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
         
         // Proper macro resolver for LSP
         const macroResolver = (rawPath: string): Expr => {
-            const currentPath = fileURLToPath(textDocument.uri);
-            const parentDir = path.dirname(currentPath);
+            let parentDir: string;
+            if (textDocument.uri.startsWith('file://')) {
+                parentDir = path.dirname(fileURLToPath(textDocument.uri));
+            } else {
+                // For untitled files, we don't have a reliable parent directory.
+                // We'll try to find a workspace root if available, otherwise use CWD.
+                parentDir = process.cwd();
+            }
+            
             let targetPath = path.resolve(parentDir, rawPath);
             if (!targetPath.endsWith('.hank')) targetPath += '.hank';
 
             if (!fs.existsSync(targetPath)) {
-                throw new Error(`Macro file not found: ${targetPath}`);
+                // Throw a custom error that our validator can catch and map to a line
+                const err = new Error(`Macro file not found: ${targetPath}`);
+                (err as any).isMacroError = true;
+                throw err;
             }
 
             const content = fs.readFileSync(targetPath, 'utf-8');
             const subLexer = new Lexer(content);
             const subTokens = subLexer.tokenize();
-            const subParser = new Parser(subTokens, targetPath, macroResolver);
+            
+            // Note: pass targetPath as a file:// URI if possible to keep sub-resolutions consistent
+            const targetUri = targetPath.startsWith('/') ? `file://${targetPath}` : `file:///${targetPath.replace(/\\/g, '/')}`;
+            const subParser = new Parser(subTokens, targetUri, macroResolver);
             return subParser.parse();
         };
 
