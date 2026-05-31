@@ -412,13 +412,20 @@ async function validateTextDocument(textDocument) {
                     // Task detection logic
                     let isTask = false;
                     let parameters = undefined;
-                    let sourceUri = currentUri;
+                    let sourceUri = node.td.filename || currentUri;
                     let sourceLine = node.td.line;
                     let sourceCol = node.td.column;
                     let isMacro = false;
                     if (node.value.kind === 'FuncDef') {
                         isTask = true;
                         parameters = node.value.params.map((p) => p.name);
+                        // If the FuncDef has a different filename, it came from a macro
+                        if (node.value.td.filename && node.value.td.filename !== currentUri) {
+                            sourceUri = node.value.td.filename;
+                            sourceLine = node.value.td.line;
+                            sourceCol = node.value.td.column;
+                            isMacro = true;
+                        }
                     }
                     else if (node.value.kind === 'Block') {
                         // Check if it's a macro block that results in a Task
@@ -426,10 +433,12 @@ async function validateTextDocument(textDocument) {
                         if (lastStmt && lastStmt.kind === 'FuncDef') {
                             isTask = true;
                             parameters = lastStmt.params.map((p) => p.name);
-                            sourceUri = lastStmt.td.filename || currentUri;
-                            sourceLine = lastStmt.td.line;
-                            sourceCol = lastStmt.td.column;
-                            isMacro = true;
+                            if (lastStmt.td.filename && lastStmt.td.filename !== currentUri) {
+                                sourceUri = lastStmt.td.filename;
+                                sourceLine = lastStmt.td.line;
+                                sourceCol = lastStmt.td.column;
+                                isMacro = true;
+                            }
                         }
                     }
                     localSymbols[node.name] = {
