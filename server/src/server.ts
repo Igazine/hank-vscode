@@ -34,6 +34,7 @@ interface LocalSymbol {
     kind: 'Task' | 'Variable';
     parameters?: string[];
     line: number;
+    notes?: string[];
 }
 
 const documentSymbols: Map<string, Record<string, LocalSymbol>> = new Map();
@@ -197,15 +198,24 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     }
 
     if (metadata) {
+        const contents = [
+            `### \`${metadata.signature}\``,
+            `---`,
+            metadata.description,
+            metadata.example ? `\n**Example:**\n\`\`\`hank\n${metadata.example}\n\`\`\`` : ''
+        ];
+
+        if (metadata.notes && metadata.notes.length > 0) {
+            contents.push(`\n---`);
+            metadata.notes.forEach((note: string) => {
+                contents.push(`\n*${note}*`);
+            });
+        }
+
         return {
             contents: {
                 kind: MarkupKind.Markdown,
-                value: [
-                    `### \`${metadata.signature}\``,
-                    `---`,
-                    metadata.description,
-                    metadata.example ? `\n**Example:**\n\`\`\`hank\n${metadata.example}\n\`\`\`` : ''
-                ].join('\n')
+                value: contents.join('\n')
             }
         };
     }
@@ -281,25 +291,55 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
 
         const ast = parser.parse();
 
-        // Walk AST to extract symbols
+        // Walk AST to extract symbols with scope tracking
+        const scopeStack: Set<string>[] = [new Set()];
+        const isDefined = (name: string) => {
+            for (let i = scopeStack.length - 1; i >= 0; i--) {
+                if (scopeStack[i].has(name)) return true;
+            }
+            return false;
+        };
+
         const walk = (node: Expr) => {
             if (!node) return;
             switch (node.kind) {
                 case 'Block':
+                    scopeStack.push(new Set());
                     node.stmts.forEach(walk);
+                    scopeStack.pop();
                     break;
                 case 'Assign':
+                    const notes: string[] = [];
+                    // Analyze RHS first (Evaluate)
+                    if (node.value.kind === 'Ident') {
+                        const rhsName = (node.value as any).name;
+                        if (rhsName === node.name) {
+                            if (!isDefined(rhsName) && !HANK_STDLIB_METADATA[rhsName]) {
+                                notes.push(`**Evaluate-Then-Bind**: The right-side '${rhsName}' was not found in any scope and evaluated to **Void**. This value is now bound to the local identifier '${rhsName}'.`);
+                            } else if (isDefined(rhsName)) {
+                                notes.push(`**Shadowing**: This captures the value of '${rhsName}' from a parent scope. Changes to this local variable will not affect the original.`);
+                            }
+                        }
+                    }
+                    
                     const isTask = node.value.kind === 'FuncDef';
                     localSymbols[node.name] = {
                         name: node.name,
                         kind: isTask ? 'Task' : 'Variable',
                         parameters: isTask ? (node.value as any).params.map((p: Param) => p.name) : undefined,
-                        line: node.td.line
+                        line: node.td.line,
+                        notes: notes.length > 0 ? notes : undefined
                     };
+
                     walk(node.value);
+                    
+                    // Bind LHS to current scope
+                    scopeStack[scopeStack.length - 1].add(node.name);
                     break;
                 case 'FuncDef':
+                    scopeStack.push(new Set(node.params.map(p => p.name)));
                     walk(node.body);
+                    scopeStack.pop();
                     break;
                 case 'FlowControl':
                     walk(node.condition);
