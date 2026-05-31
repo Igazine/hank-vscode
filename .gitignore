@@ -1,1 +1,6 @@
-node_modules/\nout/\n.vscode-test/
+node_modules/
+out/
+.vscode-test/
+client/node_modules/
+server/node_modules/
+*.vsix
