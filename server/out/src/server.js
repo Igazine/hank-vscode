@@ -155,7 +155,8 @@ connection.onHover((params) => {
             const sym = local[symbol];
             metadata = {
                 signature: sym.kind === 'Task' ? `${sym.name}(${(sym.parameters || []).join(', ')})` : sym.name,
-                description: `Local ${sym.kind.toLowerCase()} defined on line ${sym.line}`
+                description: `Local ${sym.kind.toLowerCase()} defined on line ${sym.line}`,
+                notes: sym.notes
             };
         }
     }
