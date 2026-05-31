@@ -1,7 +1,43 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 const node_js_1 = require("vscode-languageserver/node.js");
 const vscode_languageserver_textdocument_1 = require("vscode-languageserver-textdocument");
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const url_1 = require("url");
 // Import Hank Core (using relative path to submodule source)
 const Lexer_js_1 = require("../vendor/hank-ts/src/Lexer.js");
 const Parser_js_1 = require("../vendor/hank-ts/src/Parser.js");
@@ -12,17 +48,31 @@ const Types_js_1 = require("../vendor/hank-ts/src/Types.js");
 const metadata_js_1 = require("./metadata.js");
 const documentSymbols = new Map();
 const deadCodeRanges = new Map();
-// Mock Resource for LSP execution
-class MemoryResource {
+// Resource implementation for LSP execution
+class LSPResource extends Types_js_1.Resource {
     id;
     content;
-    ast = null;
-    constructor(id, content) {
+    constructor(id, content = null) {
+        super(id);
         this.id = id;
         this.content = content;
     }
-    async load() { return; }
-    resolve(path) { return new MemoryResource(path, ''); }
+    async load() {
+        if (this.content !== null)
+            return;
+        const filePath = (0, url_1.fileURLToPath)(this.id);
+        this.content = fs.readFileSync(filePath, 'utf-8');
+    }
+    resolve(rawPath) {
+        const currentPath = (0, url_1.fileURLToPath)(this.id);
+        const parentDir = path.dirname(currentPath);
+        let targetPath = path.resolve(parentDir, rawPath);
+        if (!targetPath.endsWith('.hank'))
+            targetPath += '.hank';
+        // Convert path back to URI for the Resource ID
+        const targetUri = `file://${targetPath}`;
+        return new LSPResource(targetUri);
+    }
 }
 const connection = (0, node_js_1.createConnection)(node_js_1.ProposedFeatures.all);
 const documents = new node_js_1.TextDocuments(vscode_languageserver_textdocument_1.TextDocument);
@@ -217,7 +267,7 @@ connection.onRequest('hank/execute', async (params) => {
         }
     });
     try {
-        const resource = new MemoryResource(params.uri, params.content);
+        const resource = new LSPResource(params.uri, params.content);
         const result = await runner.run(resource, []);
         return valToString(result);
     }
@@ -253,9 +303,23 @@ async function validateTextDocument(textDocument) {
     try {
         const lexer = new Lexer_js_1.Lexer(text);
         const tokens = lexer.tokenize();
-        const parser = new Parser_js_1.Parser(tokens, textDocument.uri, (id) => {
-            throw new Error(`Macro resolution not yet supported in LSP: ${id}`);
-        });
+        // Proper macro resolver for LSP
+        const macroResolver = (rawPath) => {
+            const currentPath = (0, url_1.fileURLToPath)(textDocument.uri);
+            const parentDir = path.dirname(currentPath);
+            let targetPath = path.resolve(parentDir, rawPath);
+            if (!targetPath.endsWith('.hank'))
+                targetPath += '.hank';
+            if (!fs.existsSync(targetPath)) {
+                throw new Error(`Macro file not found: ${targetPath}`);
+            }
+            const content = fs.readFileSync(targetPath, 'utf-8');
+            const subLexer = new Lexer_js_1.Lexer(content);
+            const subTokens = subLexer.tokenize();
+            const subParser = new Parser_js_1.Parser(subTokens, targetPath, macroResolver);
+            return subParser.parse();
+        };
+        const parser = new Parser_js_1.Parser(tokens, textDocument.uri, macroResolver);
         const ast = parser.parse();
         // Walk AST to extract symbols with scope tracking
         const scopeStack = [new Set()];

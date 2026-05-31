@@ -19,6 +19,9 @@ import {
 } from 'vscode-languageserver/node.js';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 // Import Hank Core (using relative path to submodule source)
 import { Lexer } from '../vendor/hank-ts/src/Lexer.js';
@@ -41,12 +44,26 @@ interface LocalSymbol {
 const documentSymbols: Map<string, Record<string, LocalSymbol>> = new Map();
 const deadCodeRanges: Map<string, Range[]> = new Map();
 
-// Mock Resource for LSP execution
-class MemoryResource implements Resource {
-    public ast: any = null;
-    constructor(public id: string, public content: string) {}
-    async load() { return; }
-    resolve(path: string) { return new MemoryResource(path, ''); }
+// Resource implementation for LSP execution
+class LSPResource extends Resource {
+    constructor(public id: string, public override content: string | null = null) {
+        super(id);
+    }
+    async load() {
+        if (this.content !== null) return;
+        const filePath = fileURLToPath(this.id);
+        this.content = fs.readFileSync(filePath, 'utf-8');
+    }
+    resolve(rawPath: string) {
+        const currentPath = fileURLToPath(this.id);
+        const parentDir = path.dirname(currentPath);
+        let targetPath = path.resolve(parentDir, rawPath);
+        if (!targetPath.endsWith('.hank')) targetPath += '.hank';
+        
+        // Convert path back to URI for the Resource ID
+        const targetUri = `file://${targetPath}`;
+        return new LSPResource(targetUri);
+    }
 }
 
 const connection = createConnection(ProposedFeatures.all);
@@ -265,7 +282,7 @@ connection.onRequest('hank/execute', async (params: { uri: string, content: stri
     });
 
     try {
-        const resource = new MemoryResource(params.uri, params.content);
+        const resource = new LSPResource(params.uri, params.content);
         const result = await runner.run(resource, []);
         return valToString(result);
     } catch (e: any) {
@@ -300,11 +317,26 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     try {
         const lexer = new Lexer(text);
         const tokens = lexer.tokenize();
+        
+        // Proper macro resolver for LSP
+        const macroResolver = (rawPath: string): Expr => {
+            const currentPath = fileURLToPath(textDocument.uri);
+            const parentDir = path.dirname(currentPath);
+            let targetPath = path.resolve(parentDir, rawPath);
+            if (!targetPath.endsWith('.hank')) targetPath += '.hank';
 
-        const parser = new Parser(tokens, textDocument.uri, (id) => {
-            throw new Error(`Macro resolution not yet supported in LSP: ${id}`);
-        });
+            if (!fs.existsSync(targetPath)) {
+                throw new Error(`Macro file not found: ${targetPath}`);
+            }
 
+            const content = fs.readFileSync(targetPath, 'utf-8');
+            const subLexer = new Lexer(content);
+            const subTokens = subLexer.tokenize();
+            const subParser = new Parser(subTokens, targetPath, macroResolver);
+            return subParser.parse();
+        };
+
+        const parser = new Parser(tokens, textDocument.uri, macroResolver);
         const ast = parser.parse();
 
         // Walk AST to extract symbols with scope tracking
