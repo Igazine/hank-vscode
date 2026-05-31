@@ -86,7 +86,8 @@ connection.onInitialize((params) => {
             hoverProvider: true,
             signatureHelpProvider: {
                 triggerCharacters: ['(', ',']
-            }
+            },
+            definitionProvider: true
         }
     };
     return result;
@@ -204,9 +205,10 @@ connection.onHover((params) => {
     if (!metadata) {
         if (local && local[symbol]) {
             const sym = local[symbol];
+            const origin = sym.isMacro ? `macro-included file` : `line ${sym.line}`;
             metadata = {
                 signature: sym.kind === 'Task' ? `${sym.name}(${(sym.parameters || []).join(', ')})` : sym.name,
-                description: `Local ${sym.kind.toLowerCase()} defined on line ${sym.line}`,
+                description: `Local ${sym.kind.toLowerCase()} defined in ${origin}`,
                 notes: sym.notes || []
             };
         }
@@ -238,6 +240,34 @@ connection.onHover((params) => {
             contents: {
                 kind: node_js_1.MarkupKind.Markdown,
                 value: contents.join('\n')
+            }
+        };
+    }
+    return null;
+});
+// Implement Go to Definition
+connection.onDefinition((params) => {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc)
+        return null;
+    const text = doc.getText();
+    const lineText = text.split('\n')[params.position.line];
+    const charPos = params.position.character;
+    let start = charPos;
+    while (start > 0 && /[a-zA-Z0-9_]/.test(lineText[start - 1]))
+        start--;
+    let end = charPos;
+    while (end < lineText.length && /[a-zA-Z0-9_]/.test(lineText[end]))
+        end++;
+    const symbol = lineText.substring(start, end);
+    const local = documentSymbols.get(params.textDocument.uri);
+    if (local && local[symbol]) {
+        const sym = local[symbol];
+        return {
+            uri: sym.uri,
+            range: {
+                start: { line: sym.line - 1, character: sym.column - 1 },
+                end: { line: sym.line - 1, character: sym.column + sym.name.length - 1 }
             }
         };
     }
@@ -301,7 +331,7 @@ async function validateTextDocument(textDocument) {
     const diagnostics = [];
     const localSymbols = {};
     try {
-        const lexer = new Lexer_js_1.Lexer(text);
+        const lexer = new Lexer_js_1.Lexer(text, textDocument.uri);
         const tokens = lexer.tokenize();
         // Recursive macro resolver factory
         const createResolver = (currentUri) => {
@@ -342,7 +372,7 @@ async function validateTextDocument(textDocument) {
             }
             return false;
         };
-        const walk = (node) => {
+        const walk = (node, currentUri) => {
             if (!node)
                 return false;
             switch (node.kind) {
@@ -352,13 +382,15 @@ async function validateTextDocument(textDocument) {
                     for (let i = 0; i < node.stmts.length; i++) {
                         const stmt = node.stmts[i];
                         if (blockReturns) {
-                            // This statement is unreachable
-                            docDeadCode.push({
-                                start: { line: stmt.td.line - 1, character: stmt.td.column - 1 },
-                                end: { line: stmt.td.line - 1, character: 999 } // End of line approx
-                            });
+                            // Only mark as dead code if it's in the primary file being edited
+                            if (currentUri === textDocument.uri) {
+                                docDeadCode.push({
+                                    start: { line: stmt.td.line - 1, character: stmt.td.column - 1 },
+                                    end: { line: stmt.td.line - 1, character: 999 }
+                                });
+                            }
                         }
-                        if (walk(stmt))
+                        if (walk(stmt, currentUri))
                             blockReturns = true;
                     }
                     scopeStack.pop();
@@ -377,43 +409,68 @@ async function validateTextDocument(textDocument) {
                             }
                         }
                     }
-                    const isTask = node.value.kind === 'FuncDef';
+                    // Task detection logic
+                    let isTask = false;
+                    let parameters = undefined;
+                    let sourceUri = currentUri;
+                    let sourceLine = node.td.line;
+                    let sourceCol = node.td.column;
+                    let isMacro = false;
+                    if (node.value.kind === 'FuncDef') {
+                        isTask = true;
+                        parameters = node.value.params.map((p) => p.name);
+                    }
+                    else if (node.value.kind === 'Block') {
+                        // Check if it's a macro block that results in a Task
+                        const lastStmt = node.value.stmts[node.value.stmts.length - 1];
+                        if (lastStmt && lastStmt.kind === 'FuncDef') {
+                            isTask = true;
+                            parameters = lastStmt.params.map((p) => p.name);
+                            sourceUri = lastStmt.td.filename || currentUri;
+                            sourceLine = lastStmt.td.line;
+                            sourceCol = lastStmt.td.column;
+                            isMacro = true;
+                        }
+                    }
                     localSymbols[node.name] = {
                         name: node.name,
                         kind: isTask ? 'Task' : 'Variable',
-                        parameters: isTask ? node.value.params.map((p) => p.name) : undefined,
-                        line: node.td.line,
+                        parameters,
+                        line: sourceLine,
+                        column: sourceCol,
+                        uri: sourceUri,
+                        isMacro,
                         notes: notes.length > 0 ? notes : undefined
                     };
-                    const rhsReturns = walk(node.value);
+                    const rhsReturns = walk(node.value, currentUri);
                     // Bind LHS to current scope
                     scopeStack[scopeStack.length - 1].add(node.name);
                     return rhsReturns;
                 case 'FuncDef':
                     scopeStack.push(new Set(node.params.map(p => p.name)));
-                    walk(node.body); // Return status within task doesn't terminate parent block
+                    walk(node.body, currentUri);
                     scopeStack.pop();
                     return false;
                 case 'UnOp':
-                    walk(node.target);
+                    walk(node.target, currentUri);
                     return node.op === '^';
                 case 'FlowControl':
-                    walk(node.condition);
-                    walk(node.success);
+                    walk(node.condition, currentUri);
+                    walk(node.success, currentUri);
                     if (node.fallback)
-                        walk(node.fallback);
+                        walk(node.fallback, currentUri);
                     if (node.rescue)
-                        walk(node.rescue);
-                    return false; // Gates are conditional
+                        walk(node.rescue, currentUri);
+                    return false;
                 case 'FuncCall':
-                    walk(node.target);
-                    node.args.forEach(walk);
+                    walk(node.target, currentUri);
+                    node.args.forEach(a => walk(a, currentUri));
                     return false;
                 case 'Array':
-                    node.items.forEach(walk);
+                    node.items.forEach(a => walk(a, currentUri));
                     return false;
                 case 'Map':
-                    node.fields.forEach(walk);
+                    node.fields.forEach(a => walk(a, currentUri));
                     return false;
                 case 'Ident':
                 case 'Literal':
@@ -422,7 +479,7 @@ async function validateTextDocument(textDocument) {
             }
             return false;
         };
-        walk(ast);
+        walk(ast, textDocument.uri);
         documentSymbols.set(textDocument.uri, localSymbols);
         deadCodeRanges.set(textDocument.uri, docDeadCode);
     }

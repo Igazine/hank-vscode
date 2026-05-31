@@ -369,7 +369,7 @@ export class Parser {
     }
     peekTd() {
         const t = this.peek();
-        return { line: t.line, column: t.column, lineText: t.lineText };
+        return { line: t.line, column: t.column, lineText: t.lineText, filename: t.filename };
     }
     skipNewlines() {
         while (this.pos < this.tokens.length && this.tokens[this.pos].type === TokenType.Newline) {

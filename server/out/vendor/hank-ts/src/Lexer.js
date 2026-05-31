@@ -26,12 +26,14 @@ export var TokenType;
 })(TokenType || (TokenType = {}));
 export class Lexer {
     input;
+    filename;
     pos = 0;
     line = 1;
     lineStart = 0;
     tokens = [];
-    constructor(input) {
+    constructor(input, filename) {
         this.input = input;
+        this.filename = filename;
     }
     tokenize() {
         while (this.pos < this.input.length) {
@@ -129,7 +131,8 @@ export class Lexer {
             literal,
             line: this.line,
             column,
-            lineText: this.getCurrentLineText()
+            lineText: this.getCurrentLineText(),
+            filename: this.filename
         });
     }
     skipComment() {
