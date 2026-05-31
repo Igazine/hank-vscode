@@ -51,12 +51,14 @@
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
-        "compile": "tsc -b",
+        "compile": "tsc -b && npm run bundle",
+        "bundle": "esbuild ./client/src/extension.ts --bundle --outfile=client/out/extension.js --external:vscode --format=cjs --platform=node --minify && esbuild ./server/src/server.ts --bundle --outfile=server/out/server.js --external:vscode --format=cjs --platform=node --minify",
         "watch": "tsc -b -w",
         "postinstall": "cd client && npm install && cd ../server && npm install",
         "test": "node ./client/out/test/runTest.js"
     },
     "devDependencies": {
+        "esbuild": "^0.20.1",
         "typescript": "^5.1.3"
     }
 }
