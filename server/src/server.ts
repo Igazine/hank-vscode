@@ -14,7 +14,8 @@ import {
     MarkupKind,
     SignatureHelp,
     SignatureInformation,
-    ParameterInformation
+    ParameterInformation,
+    Range
 } from 'vscode-languageserver/node.js';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -38,6 +39,7 @@ interface LocalSymbol {
 }
 
 const documentSymbols: Map<string, Record<string, LocalSymbol>> = new Map();
+const deadCodeRanges: Map<string, Range[]> = new Map();
 
 // Mock Resource for LSP execution
 class MemoryResource implements Resource {
@@ -186,29 +188,42 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     const symbol = lineText.substring(start, end);
     let metadata: any = HANK_STDLIB_METADATA[symbol];
 
+    const local = documentSymbols.get(params.textDocument.uri);
     if (!metadata) {
-        const local = documentSymbols.get(params.textDocument.uri);
         if (local && local[symbol]) {
             const sym = local[symbol];
             metadata = {
                 signature: sym.kind === 'Task' ? `${sym.name}(${(sym.parameters || []).join(', ')})` : sym.name,
                 description: `Local ${sym.kind.toLowerCase()} defined on line ${sym.line}`,
-                notes: sym.notes
+                notes: sym.notes || []
             };
         }
     }
 
-    if (metadata) {
-        const contents = [
+    // Check for unreachable code
+    const deadCode = deadCodeRanges.get(params.textDocument.uri);
+    const isUnreachable = deadCode?.some(r => 
+        params.position.line >= r.start.line && 
+        params.position.line <= r.end.line &&
+        params.position.character >= r.start.character
+    );
+
+    if (metadata || isUnreachable) {
+        const contents = metadata ? [
             `### \`${metadata.signature}\``,
             `---`,
             metadata.description,
             metadata.example ? `\n**Example:**\n\`\`\`hank\n${metadata.example}\n\`\`\`` : ''
-        ];
+        ] : [];
 
-        if (metadata.notes && metadata.notes.length > 0) {
-            contents.push(`\n---`);
-            metadata.notes.forEach((note: string) => {
+        const notes = metadata?.notes || [];
+        if (isUnreachable) {
+            notes.push(`**Unreachable Code**: This statement follows an unconditional return (\`^\`) and will never be executed.`);
+        }
+
+        if (notes.length > 0) {
+            if (contents.length > 0) contents.push(`\n---`);
+            notes.forEach((note: string) => {
                 contents.push(`\n*${note}*`);
             });
         }
@@ -294,6 +309,8 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
 
         // Walk AST to extract symbols with scope tracking
         const scopeStack: Set<string>[] = [new Set()];
+        const docDeadCode: Range[] = [];
+
         const isDefined = (name: string) => {
             for (let i = scopeStack.length - 1; i >= 0; i--) {
                 if (scopeStack[i].has(name)) return true;
@@ -301,14 +318,26 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
             return false;
         };
 
-        const walk = (node: Expr) => {
-            if (!node) return;
+        const walk = (node: Expr): boolean => {
+            if (!node) return false;
             switch (node.kind) {
                 case 'Block':
                     scopeStack.push(new Set());
-                    node.stmts.forEach(walk);
+                    let blockReturns = false;
+                    for (let i = 0; i < node.stmts.length; i++) {
+                        const stmt = node.stmts[i];
+                        if (blockReturns) {
+                            // This statement is unreachable
+                            docDeadCode.push({
+                                start: { line: stmt.td.line - 1, character: stmt.td.column - 1 },
+                                end: { line: stmt.td.line - 1, character: 999 } // End of line approx
+                            });
+                        }
+                        if (walk(stmt)) blockReturns = true;
+                    }
                     scopeStack.pop();
-                    break;
+                    return blockReturns;
+
                 case 'Assign':
                     const notes: string[] = [];
                     // Analyze RHS first (Evaluate)
@@ -322,7 +351,7 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
                             }
                         }
                     }
-                    
+
                     const isTask = node.value.kind === 'FuncDef';
                     localSymbols[node.name] = {
                         name: node.name,
@@ -332,37 +361,53 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
                         notes: notes.length > 0 ? notes : undefined
                     };
 
-                    walk(node.value);
-                    
+                    const rhsReturns = walk(node.value);
+
                     // Bind LHS to current scope
                     scopeStack[scopeStack.length - 1].add(node.name);
-                    break;
+                    return rhsReturns;
+
                 case 'FuncDef':
                     scopeStack.push(new Set(node.params.map(p => p.name)));
-                    walk(node.body);
+                    walk(node.body); // Return status within task doesn't terminate parent block
                     scopeStack.pop();
-                    break;
+                    return false;
+
+                case 'UnOp':
+                    walk(node.target);
+                    return node.op === '^';
+
                 case 'FlowControl':
                     walk(node.condition);
                     walk(node.success);
                     if (node.fallback) walk(node.fallback);
                     if (node.rescue) walk(node.rescue);
-                    break;
+                    return false; // Gates are conditional
+
                 case 'FuncCall':
                     walk(node.target);
                     node.args.forEach(walk);
-                    break;
+                    return false;
+
                 case 'Array':
                     node.items.forEach(walk);
-                    break;
+                    return false;
+
                 case 'Map':
                     node.fields.forEach(walk);
-                    break;
+                    return false;
+
+                case 'Ident':
+                case 'Literal':
+                case 'Error':
+                    return false;
             }
+            return false;
         };
 
         walk(ast);
         documentSymbols.set(textDocument.uri, localSymbols);
+        deadCodeRanges.set(textDocument.uri, docDeadCode);
 
     } catch (e: any) {
         // If it's a HankErrorValue (from the Parser/Lexer)
