@@ -100,8 +100,7 @@
                 { "name": "punctuation.definition.block.hank", "match": "[{}]" },
                 { "name": "punctuation.definition.collection.hank", "match": "[\\[\\]]" },
                 { "name": "punctuation.definition.parameters.hank", "match": "[()]" },
-                { "name": "punctuation.separator.comma.hank", "match": "," },
-                { "name": "punctuation.accessor.dot.hank", "match": "\\." }
+                { "name": "punctuation.separator.comma.hank", "match": "," }
             ]
         }
     }

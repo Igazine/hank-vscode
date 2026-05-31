@@ -14,8 +14,7 @@ connection.onInitialize((params) => {
         capabilities: {
             textDocumentSync: node_js_1.TextDocumentSyncKind.Incremental,
             completionProvider: {
-                resolveProvider: false,
-                triggerCharacters: ['.']
+                resolveProvider: false
             },
             hoverProvider: true,
             signatureHelpProvider: {
@@ -32,32 +31,11 @@ documents.onDidChangeContent(change => {
 });
 // Implement Autocomplete
 connection.onCompletion((pos) => {
-    const doc = documents.get(pos.textDocument.uri);
-    if (!doc)
-        return [];
-    const text = doc.getText();
-    const offset = doc.offsetAt(pos.position);
-    // Check if we are after a dot
-    const textBefore = text.substring(0, offset);
-    const dotMatch = textBefore.match(/([a-zA-Z_][a-zA-Z0-9_]*)\.$/);
-    if (dotMatch) {
-        const moduleName = dotMatch[1];
-        const module = metadata_js_1.HANK_STDLIB_METADATA[moduleName];
-        if (module) {
-            return Object.values(module.tasks).map(t => ({
-                label: t.name,
-                kind: node_js_1.CompletionItemKind.Function,
-                detail: t.signature,
-                documentation: t.description
-            }));
-        }
-    }
-    // Suggest top-level modules
-    return Object.values(metadata_js_1.HANK_STDLIB_METADATA).map(m => ({
-        label: m.name,
-        kind: node_js_1.CompletionItemKind.Module,
-        detail: `Hank Standard Library: ${m.name}`,
-        documentation: m.description
+    return Object.values(metadata_js_1.HANK_STDLIB_METADATA).map(t => ({
+        label: t.name,
+        kind: node_js_1.CompletionItemKind.Function,
+        detail: t.signature,
+        documentation: t.description
     }));
 });
 // Implement Signature Help
@@ -88,15 +66,11 @@ connection.onSignatureHelp((params) => {
     if (currentPos < 0)
         return null;
     // Extract the task name before the '('
-    const nameMatch = textBefore.substring(0, currentPos).match(/([a-zA-Z_][a-zA-Z0-9_.]*)$/);
+    const nameMatch = textBefore.substring(0, currentPos).match(/([a-zA-Z_][a-zA-Z0-9_]*)$/);
     if (!nameMatch)
         return null;
     const symbol = nameMatch[1];
-    let metadata;
-    if (symbol.includes('.')) {
-        const [modName, taskName] = symbol.split('.');
-        metadata = metadata_js_1.HANK_STDLIB_METADATA[modName]?.tasks[taskName];
-    }
+    const metadata = metadata_js_1.HANK_STDLIB_METADATA[symbol];
     if (metadata) {
         const signature = {
             label: metadata.signature,
@@ -129,41 +103,22 @@ connection.onHover((params) => {
     const charPos = params.position.character;
     // Find boundaries of the word/symbol
     let start = charPos;
-    while (start > 0 && /[a-zA-Z0-9_.]/.test(lineText[start - 1]))
+    while (start > 0 && /[a-zA-Z0-9_]/.test(lineText[start - 1]))
         start--;
     let end = charPos;
-    while (end < lineText.length && /[a-zA-Z0-9_.]/.test(lineText[end]))
+    while (end < lineText.length && /[a-zA-Z0-9_]/.test(lineText[end]))
         end++;
     const symbol = lineText.substring(start, end);
-    // Handle module.task
-    if (symbol.includes('.')) {
-        const [modName, taskName] = symbol.split('.');
-        const metadata = metadata_js_1.HANK_STDLIB_METADATA[modName]?.tasks[taskName];
-        if (metadata) {
-            return {
-                contents: {
-                    kind: node_js_1.MarkupKind.Markdown,
-                    value: [
-                        `### \`${metadata.signature}\``,
-                        `---`,
-                        metadata.description,
-                        metadata.example ? `\n**Example:**\n\`\`\`hank\n${metadata.example}\n\`\`\`` : ''
-                    ].join('\n')
-                }
-            };
-        }
-    }
-    // Handle just module
-    const module = metadata_js_1.HANK_STDLIB_METADATA[symbol];
-    if (module) {
+    const metadata = metadata_js_1.HANK_STDLIB_METADATA[symbol];
+    if (metadata) {
         return {
             contents: {
                 kind: node_js_1.MarkupKind.Markdown,
                 value: [
-                    `### Module: \`${module.name}\``,
+                    `### \`${metadata.signature}\``,
                     `---`,
-                    module.description,
-                    `\n**Tasks:** ${Object.keys(module.tasks).join(', ')}`
+                    metadata.description,
+                    metadata.example ? `\n**Example:**\n\`\`\`hank\n${metadata.example}\n\`\`\`` : ''
                 ].join('\n')
             }
         };
