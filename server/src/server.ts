@@ -24,10 +24,19 @@ import { Lexer } from '../vendor/hank-ts/src/Lexer.js';
 import { Parser } from '../vendor/hank-ts/src/Parser.js';
 import { Runner } from '../vendor/hank-ts/src/Runner.js';
 import { StdLib } from '../vendor/hank-ts/src/stdlib/index.js';
-import { HankErrorValue, Resource, Value, ValueType } from '../vendor/hank-ts/src/Types.js';
+import { Expr, HankErrorValue, Param, Resource, Value, ValueType } from '../vendor/hank-ts/src/Types.js';
 
 // Import Metadata
 import { HANK_STDLIB_METADATA } from './metadata.js';
+
+interface LocalSymbol {
+    name: string;
+    kind: 'Task' | 'Variable';
+    parameters?: string[];
+    line: number;
+}
+
+const documentSymbols: Map<string, Record<string, LocalSymbol>> = new Map();
 
 // Mock Resource for LSP execution
 class MemoryResource implements Resource {
@@ -64,12 +73,26 @@ documents.onDidChangeContent(change => {
 
 // Implement Autocomplete
 connection.onCompletion((pos: TextDocumentPositionParams): CompletionItem[] => {
-    return Object.values(HANK_STDLIB_METADATA).map(t => ({
+    const items: CompletionItem[] = Object.values(HANK_STDLIB_METADATA).map(t => ({
         label: t.name,
         kind: CompletionItemKind.Function,
         detail: t.signature,
         documentation: t.description
     }));
+
+    const local = documentSymbols.get(pos.textDocument.uri);
+    if (local) {
+        for (const symbol of Object.values(local)) {
+            items.push({
+                label: symbol.name,
+                kind: symbol.kind === 'Task' ? CompletionItemKind.Function : CompletionItemKind.Variable,
+                detail: symbol.kind === 'Task' ? `${symbol.name}(${(symbol.parameters || []).join(', ')})` : symbol.name,
+                documentation: `Local ${symbol.kind} defined on line ${symbol.line}`
+            });
+        }
+    }
+
+    return items;
 });
 
 // Implement Signature Help
@@ -104,7 +127,19 @@ connection.onSignatureHelp((params: TextDocumentPositionParams): SignatureHelp |
     if (!nameMatch) return null;
 
     const symbol = nameMatch[1];
-    const metadata = HANK_STDLIB_METADATA[symbol];
+    let metadata: any = HANK_STDLIB_METADATA[symbol];
+
+    if (!metadata) {
+        const local = documentSymbols.get(params.textDocument.uri);
+        if (local && local[symbol] && local[symbol].kind === 'Task') {
+            const sym = local[symbol];
+            metadata = {
+                signature: `${sym.name}(${(sym.parameters || []).join(', ')})`,
+                description: `Local task defined on line ${sym.line}`,
+                parameters: (sym.parameters || []).map(p => ({ label: p, description: '' }))
+            };
+        }
+    }
 
     if (metadata) {
         const signature: SignatureInformation = {
@@ -113,7 +148,7 @@ connection.onSignatureHelp((params: TextDocumentPositionParams): SignatureHelp |
                 kind: MarkupKind.Markdown,
                 value: metadata.description
             },
-            parameters: metadata.parameters.map(p => ({
+            parameters: metadata.parameters.map((p: any) => ({
                 label: p.label,
                 documentation: p.description
             }))
@@ -148,7 +183,18 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     while (end < lineText.length && /[a-zA-Z0-9_]/.test(lineText[end])) end++;
     
     const symbol = lineText.substring(start, end);
-    const metadata = HANK_STDLIB_METADATA[symbol];
+    let metadata: any = HANK_STDLIB_METADATA[symbol];
+
+    if (!metadata) {
+        const local = documentSymbols.get(params.textDocument.uri);
+        if (local && local[symbol]) {
+            const sym = local[symbol];
+            metadata = {
+                signature: sym.kind === 'Task' ? `${sym.name}(${(sym.parameters || []).join(', ')})` : sym.name,
+                description: `Local ${sym.kind.toLowerCase()} defined on line ${sym.line}`
+            };
+        }
+    }
 
     if (metadata) {
         return {
@@ -220,22 +266,63 @@ function valToString(v: Value): string {
         default: return 'Void';
     }
 }
-
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
     const diagnostics: Diagnostic[] = [];
+    const localSymbols: Record<string, LocalSymbol> = {};
 
     try {
         const lexer = new Lexer(text);
         const tokens = lexer.tokenize();
-        
-        // Dummy macro resolver for LSP diagnostics
-        // In the future, we could actually try to resolve and parse macros for deeper validation
+
         const parser = new Parser(tokens, textDocument.uri, (id) => {
             throw new Error(`Macro resolution not yet supported in LSP: ${id}`);
         });
 
-        parser.parse();
+        const ast = parser.parse();
+
+        // Walk AST to extract symbols
+        const walk = (node: Expr) => {
+            if (!node) return;
+            switch (node.kind) {
+                case 'Block':
+                    node.stmts.forEach(walk);
+                    break;
+                case 'Assign':
+                    const isTask = node.value.kind === 'FuncDef';
+                    localSymbols[node.name] = {
+                        name: node.name,
+                        kind: isTask ? 'Task' : 'Variable',
+                        parameters: isTask ? (node.value as any).params.map((p: Param) => p.name) : undefined,
+                        line: node.td.line
+                    };
+                    walk(node.value);
+                    break;
+                case 'FuncDef':
+                    walk(node.body);
+                    break;
+                case 'FlowControl':
+                    walk(node.condition);
+                    walk(node.success);
+                    if (node.fallback) walk(node.fallback);
+                    if (node.rescue) walk(node.rescue);
+                    break;
+                case 'FuncCall':
+                    walk(node.target);
+                    node.args.forEach(walk);
+                    break;
+                case 'Array':
+                    node.items.forEach(walk);
+                    break;
+                case 'Map':
+                    node.fields.forEach(walk);
+                    break;
+            }
+        };
+
+        walk(ast);
+        documentSymbols.set(textDocument.uri, localSymbols);
+
     } catch (e: any) {
         // If it's a HankErrorValue (from the Parser/Lexer)
         if (e && typeof e === 'object' && 'line' in e) {

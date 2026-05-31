@@ -10,6 +10,7 @@ const index_js_1 = require("../vendor/hank-ts/src/stdlib/index.js");
 const Types_js_1 = require("../vendor/hank-ts/src/Types.js");
 // Import Metadata
 const metadata_js_1 = require("./metadata.js");
+const documentSymbols = new Map();
 // Mock Resource for LSP execution
 class MemoryResource {
     id;
@@ -46,12 +47,24 @@ documents.onDidChangeContent(change => {
 });
 // Implement Autocomplete
 connection.onCompletion((pos) => {
-    return Object.values(metadata_js_1.HANK_STDLIB_METADATA).map(t => ({
+    const items = Object.values(metadata_js_1.HANK_STDLIB_METADATA).map(t => ({
         label: t.name,
         kind: node_js_1.CompletionItemKind.Function,
         detail: t.signature,
         documentation: t.description
     }));
+    const local = documentSymbols.get(pos.textDocument.uri);
+    if (local) {
+        for (const symbol of Object.values(local)) {
+            items.push({
+                label: symbol.name,
+                kind: symbol.kind === 'Task' ? node_js_1.CompletionItemKind.Function : node_js_1.CompletionItemKind.Variable,
+                detail: symbol.kind === 'Task' ? `${symbol.name}(${(symbol.parameters || []).join(', ')})` : symbol.name,
+                documentation: `Local ${symbol.kind} defined on line ${symbol.line}`
+            });
+        }
+    }
+    return items;
 });
 // Implement Signature Help
 connection.onSignatureHelp((params) => {
@@ -85,7 +98,18 @@ connection.onSignatureHelp((params) => {
     if (!nameMatch)
         return null;
     const symbol = nameMatch[1];
-    const metadata = metadata_js_1.HANK_STDLIB_METADATA[symbol];
+    let metadata = metadata_js_1.HANK_STDLIB_METADATA[symbol];
+    if (!metadata) {
+        const local = documentSymbols.get(params.textDocument.uri);
+        if (local && local[symbol] && local[symbol].kind === 'Task') {
+            const sym = local[symbol];
+            metadata = {
+                signature: `${sym.name}(${(sym.parameters || []).join(', ')})`,
+                description: `Local task defined on line ${sym.line}`,
+                parameters: (sym.parameters || []).map(p => ({ label: p, description: '' }))
+            };
+        }
+    }
     if (metadata) {
         const signature = {
             label: metadata.signature,
@@ -93,7 +117,7 @@ connection.onSignatureHelp((params) => {
                 kind: node_js_1.MarkupKind.Markdown,
                 value: metadata.description
             },
-            parameters: metadata.parameters.map(p => ({
+            parameters: metadata.parameters.map((p) => ({
                 label: p.label,
                 documentation: p.description
             }))
@@ -124,7 +148,17 @@ connection.onHover((params) => {
     while (end < lineText.length && /[a-zA-Z0-9_]/.test(lineText[end]))
         end++;
     const symbol = lineText.substring(start, end);
-    const metadata = metadata_js_1.HANK_STDLIB_METADATA[symbol];
+    let metadata = metadata_js_1.HANK_STDLIB_METADATA[symbol];
+    if (!metadata) {
+        const local = documentSymbols.get(params.textDocument.uri);
+        if (local && local[symbol]) {
+            const sym = local[symbol];
+            metadata = {
+                signature: sym.kind === 'Task' ? `${sym.name}(${(sym.parameters || []).join(', ')})` : sym.name,
+                description: `Local ${sym.kind.toLowerCase()} defined on line ${sym.line}`
+            };
+        }
+    }
     if (metadata) {
         return {
             contents: {
@@ -196,15 +230,57 @@ function valToString(v) {
 async function validateTextDocument(textDocument) {
     const text = textDocument.getText();
     const diagnostics = [];
+    const localSymbols = {};
     try {
         const lexer = new Lexer_js_1.Lexer(text);
         const tokens = lexer.tokenize();
-        // Dummy macro resolver for LSP diagnostics
-        // In the future, we could actually try to resolve and parse macros for deeper validation
         const parser = new Parser_js_1.Parser(tokens, textDocument.uri, (id) => {
             throw new Error(`Macro resolution not yet supported in LSP: ${id}`);
         });
-        parser.parse();
+        const ast = parser.parse();
+        // Walk AST to extract symbols
+        const walk = (node) => {
+            if (!node)
+                return;
+            switch (node.kind) {
+                case 'Block':
+                    node.stmts.forEach(walk);
+                    break;
+                case 'Assign':
+                    const isTask = node.value.kind === 'FuncDef';
+                    localSymbols[node.name] = {
+                        name: node.name,
+                        kind: isTask ? 'Task' : 'Variable',
+                        parameters: isTask ? node.value.params.map((p) => p.name) : undefined,
+                        line: node.td.line
+                    };
+                    walk(node.value);
+                    break;
+                case 'FuncDef':
+                    walk(node.body);
+                    break;
+                case 'FlowControl':
+                    walk(node.condition);
+                    walk(node.success);
+                    if (node.fallback)
+                        walk(node.fallback);
+                    if (node.rescue)
+                        walk(node.rescue);
+                    break;
+                case 'FuncCall':
+                    walk(node.target);
+                    node.args.forEach(walk);
+                    break;
+                case 'Array':
+                    node.items.forEach(walk);
+                    break;
+                case 'Map':
+                    node.fields.forEach(walk);
+                    break;
+            }
+        };
+        walk(ast);
+        documentSymbols.set(textDocument.uri, localSymbols);
     }
     catch (e) {
         // If it's a HankErrorValue (from the Parser/Lexer)
