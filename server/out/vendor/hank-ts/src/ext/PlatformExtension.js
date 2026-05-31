@@ -16,38 +16,36 @@ function fromSafeInt(n) {
 }
 export class PlatformExtension {
     name = "PlatformExtension";
-    getModules() {
+    getTasks() {
         return {
-            bin: {
-                and: (args) => {
-                    const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
-                    const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
-                    return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) & checkSafeInt(b)) };
-                },
-                or: (args) => {
-                    const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
-                    const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
-                    return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) | checkSafeInt(b)) };
-                },
-                xor: (args) => {
-                    const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
-                    const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
-                    return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) ^ checkSafeInt(b)) };
-                },
-                not: (args) => {
-                    const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
-                    return { type: ValueType.Number, value: fromSafeInt(~checkSafeInt(a)) };
-                },
-                shiftL: (args) => {
-                    const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
-                    const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
-                    return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) << BigInt(Math.trunc(b))) };
-                },
-                shiftR: (args) => {
-                    const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
-                    const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
-                    return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) >> BigInt(Math.trunc(b))) };
-                }
+            bin_and: (args) => {
+                const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
+                const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
+                return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) & checkSafeInt(b)) };
+            },
+            bin_or: (args) => {
+                const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
+                const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
+                return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) | checkSafeInt(b)) };
+            },
+            bin_xor: (args) => {
+                const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
+                const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
+                return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) ^ checkSafeInt(b)) };
+            },
+            bin_not: (args) => {
+                const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
+                return { type: ValueType.Number, value: fromSafeInt(~checkSafeInt(a)) };
+            },
+            bin_shiftL: (args) => {
+                const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
+                const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
+                return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) << BigInt(Math.trunc(b))) };
+            },
+            bin_shiftR: (args) => {
+                const a = (args.length > 0 && args[0].type === ValueType.Number) ? args[0].value : 0;
+                const b = (args.length > 1 && args[1].type === ValueType.Number) ? args[1].value : 0;
+                return { type: ValueType.Number, value: fromSafeInt(checkSafeInt(a) >> BigInt(Math.trunc(b))) };
             }
         };
     }

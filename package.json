@@ -12,6 +12,22 @@
     ],
     "main": "./client/out/extension.js",
     "contributes": {
+        "commands": [
+            {
+                "command": "hank.runScript",
+                "title": "Run Hank Script",
+                "icon": "$(play)"
+            }
+        ],
+        "menus": {
+            "editor/title/run": [
+                {
+                    "command": "hank.runScript",
+                    "when": "editorLangId == hank",
+                    "group": "navigation"
+                }
+            ]
+        },
         "languages": [
             {
                 "id": "hank",

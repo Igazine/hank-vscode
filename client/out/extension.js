@@ -39,7 +39,10 @@ const path = __importStar(require("path"));
 const vscode_1 = require("vscode");
 const node_1 = require("vscode-languageclient/node");
 let client;
+let outputChannel;
 function activate(context) {
+    // Create Output Channel
+    outputChannel = vscode_1.window.createOutputChannel('Hank');
     // The server is implemented in node
     const serverModule = context.asAbsolutePath(path.join('server', 'out', 'src', 'server.js'));
     // If the extension is launched in debug mode then the debug server options are used
@@ -62,8 +65,35 @@ function activate(context) {
     };
     // Create the language client and start the client.
     client = new node_1.LanguageClient('hankLanguageServer', 'Hank Language Server', serverOptions, clientOptions);
+    // Register Run Command
+    context.subscriptions.push(vscode_1.commands.registerCommand('hank.runScript', () => {
+        const editor = vscode_1.window.activeTextEditor;
+        if (!editor) {
+            vscode_1.window.showErrorMessage('No active Hank script found.');
+            return;
+        }
+        const script = editor.document.getText();
+        const uri = editor.document.uri.toString();
+        outputChannel.clear();
+        outputChannel.show(true); // Focus the tab
+        outputChannel.appendLine(`--- Running: ${path.basename(editor.document.fileName)} ---`);
+        client.sendRequest('hank/execute', { uri, content: script }).then((result) => {
+            outputChannel.appendLine(`\n--- Execution Finished (Result: ${result}) ---`);
+        }).catch((err) => {
+            outputChannel.appendLine(`\n--- Execution Failed ---`);
+            outputChannel.appendLine(err.message || String(err));
+        });
+    }));
     // Start the client. This will also launch the server
-    client.start();
+    client.start().then(() => {
+        // Register custom notifications from the server
+        client.onNotification('hank/log', (msg) => {
+            outputChannel.appendLine(msg);
+        });
+        client.onNotification('hank/error', (msg) => {
+            outputChannel.appendLine(`[ERROR] ${msg}`);
+        });
+    });
 }
 function deactivate() {
     if (!client) {

@@ -22,10 +22,20 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 // Import Hank Core (using relative path to submodule source)
 import { Lexer } from '../vendor/hank-ts/src/Lexer.js';
 import { Parser } from '../vendor/hank-ts/src/Parser.js';
-import { HankErrorValue } from '../vendor/hank-ts/src/Types.js';
+import { Runner } from '../vendor/hank-ts/src/Runner.js';
+import { StdLib } from '../vendor/hank-ts/src/stdlib/index.js';
+import { HankErrorValue, Resource, Value, ValueType } from '../vendor/hank-ts/src/Types.js';
 
 // Import Metadata
 import { HANK_STDLIB_METADATA } from './metadata.js';
+
+// Mock Resource for LSP execution
+class MemoryResource implements Resource {
+    public ast: any = null;
+    constructor(public id: string, public content: string) {}
+    async load() { return; }
+    resolve(path: string) { return new MemoryResource(path, ''); }
+}
 
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
@@ -156,6 +166,60 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
     return null;
 });
+
+// Implement Embedded Execution
+connection.onRequest('hank/execute', async (params: { uri: string, content: string }) => {
+    const runner = new Runner();
+    const stdlib = new StdLib();
+    runner.registerExtension(stdlib);
+
+    // Intercept logs and pipe them back to the client
+    runner.registerTasks({
+        log_print: (args) => {
+            const msg = args.map(a => valToString(a)).join(' ');
+            connection.sendNotification('hank/log', msg);
+            return { type: ValueType.Void };
+        },
+        log_error: (args) => {
+            const msg = args.map(a => valToString(a)).join(' ');
+            connection.sendNotification('hank/error', msg);
+            return { type: ValueType.Void };
+        },
+        log_warn: (args) => {
+            const msg = args.map(a => valToString(a)).join(' ');
+            connection.sendNotification('hank/log', `[WARN] ${msg}`);
+            return { type: ValueType.Void };
+        }
+    });
+
+    try {
+        const resource = new MemoryResource(params.uri, params.content);
+        const result = await runner.run(resource, []);
+        return valToString(result);
+    } catch (e: any) {
+        connection.sendNotification('hank/error', e.message || String(e));
+        return 'Execution Failed';
+    }
+});
+
+function valToString(v: Value): string {
+    if (!v) return 'Void';
+    switch (v.type) {
+        case ValueType.String: return v.value;
+        case ValueType.Number: {
+            let s = v.value.toString();
+            if (s.endsWith('.0')) s = s.substring(0, s.length - 2);
+            return s;
+        }
+        case ValueType.Void: return 'Void';
+        case ValueType.Array: return '[Array]';
+        case ValueType.Map: return '[Map]';
+        case ValueType.Opaque: return `[Opaque:${v.label}]`;
+        case ValueType.Task: return '[Task]';
+        case ValueType.Error: return `[Error:${v.code}]`;
+        default: return 'Void';
+    }
+}
 
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();

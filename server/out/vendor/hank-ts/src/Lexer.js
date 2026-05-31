@@ -13,17 +13,16 @@ export var TokenType;
     TokenType[TokenType["Hash"] = 8] = "Hash";
     TokenType[TokenType["Not"] = 9] = "Not";
     TokenType[TokenType["Caret"] = 10] = "Caret";
-    TokenType[TokenType["Dot"] = 11] = "Dot";
-    TokenType[TokenType["Comma"] = 12] = "Comma";
-    TokenType[TokenType["LParen"] = 13] = "LParen";
-    TokenType[TokenType["RParen"] = 14] = "RParen";
-    TokenType[TokenType["LBrace"] = 15] = "LBrace";
-    TokenType[TokenType["RBrace"] = 16] = "RBrace";
-    TokenType[TokenType["LBracket"] = 17] = "LBracket";
-    TokenType[TokenType["RBracket"] = 18] = "RBracket";
-    TokenType[TokenType["Newline"] = 19] = "Newline";
-    TokenType[TokenType["EOF"] = 20] = "EOF";
-    TokenType[TokenType["Error"] = 21] = "Error";
+    TokenType[TokenType["Comma"] = 11] = "Comma";
+    TokenType[TokenType["LParen"] = 12] = "LParen";
+    TokenType[TokenType["RParen"] = 13] = "RParen";
+    TokenType[TokenType["LBrace"] = 14] = "LBrace";
+    TokenType[TokenType["RBrace"] = 15] = "RBrace";
+    TokenType[TokenType["LBracket"] = 16] = "LBracket";
+    TokenType[TokenType["RBracket"] = 17] = "RBracket";
+    TokenType[TokenType["Newline"] = 18] = "Newline";
+    TokenType[TokenType["EOF"] = 19] = "EOF";
+    TokenType[TokenType["Error"] = 20] = "Error";
 })(TokenType || (TokenType = {}));
 export class Lexer {
     input;
@@ -93,9 +92,6 @@ export class Lexer {
                     break;
                 case '^':
                     this.addToken(TokenType.Caret, '^');
-                    break;
-                case '.':
-                    this.addToken(TokenType.Dot, '.');
                     break;
                 case ',':
                     this.addToken(TokenType.Comma, ',');
