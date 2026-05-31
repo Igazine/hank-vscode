@@ -46,7 +46,7 @@ const index_js_1 = require("../vendor/hank-ts/src/stdlib/index.js");
 const Types_js_1 = require("../vendor/hank-ts/src/Types.js");
 // Import Metadata
 const metadata_js_1 = require("./metadata.js");
-const documentSymbols = new Map();
+const documentDefinitions = new Map();
 const deadCodeRanges = new Map();
 // Resource implementation for LSP execution
 class LSPResource extends Types_js_1.Resource {
@@ -105,14 +105,17 @@ connection.onCompletion((pos) => {
         detail: t.signature,
         documentation: t.description
     }));
-    const local = documentSymbols.get(pos.textDocument.uri);
-    if (local) {
-        for (const symbol of Object.values(local)) {
+    const defs = documentDefinitions.get(pos.textDocument.uri);
+    if (defs) {
+        // Find definitions visible at current position
+        const visible = defs.filter(d => pos.position.line >= d.scopeRange.start.line &&
+            pos.position.line <= d.scopeRange.end.line);
+        for (const symbol of visible) {
             items.push({
                 label: symbol.name,
                 kind: symbol.kind === 'Task' ? node_js_1.CompletionItemKind.Function : node_js_1.CompletionItemKind.Variable,
                 detail: symbol.kind === 'Task' ? `${symbol.name}(${(symbol.parameters || []).join(', ')})` : symbol.name,
-                documentation: `Local ${symbol.kind} defined on line ${symbol.line}`
+                documentation: `Local ${symbol.kind.toLowerCase()} defined in ${symbol.uri === pos.textDocument.uri ? `line ${symbol.range.start.line + 1}` : 'macro-included file'}`
             });
         }
     }
@@ -152,14 +155,20 @@ connection.onSignatureHelp((params) => {
     const symbol = nameMatch[1];
     let metadata = metadata_js_1.HANK_STDLIB_METADATA[symbol];
     if (!metadata) {
-        const local = documentSymbols.get(params.textDocument.uri);
-        if (local && local[symbol] && local[symbol].kind === 'Task') {
-            const sym = local[symbol];
-            metadata = {
-                signature: `${sym.name}(${(sym.parameters || []).join(', ')})`,
-                description: `Local task defined on line ${sym.line}`,
-                parameters: (sym.parameters || []).map(p => ({ label: p, description: '' }))
-            };
+        const defs = documentDefinitions.get(params.textDocument.uri);
+        if (defs) {
+            const visible = defs.filter(d => d.name === symbol && d.kind === 'Task' &&
+                params.position.line >= d.scopeRange.start.line &&
+                params.position.line <= d.scopeRange.end.line);
+            visible.sort((a, b) => (a.scopeRange.end.line - a.scopeRange.start.line) - (b.scopeRange.end.line - b.scopeRange.start.line));
+            const sym = visible[0];
+            if (sym) {
+                metadata = {
+                    signature: `${sym.name}(${(sym.parameters || []).join(', ')})`,
+                    description: `Local task defined in ${sym.uri === params.textDocument.uri ? `line ${sym.range.start.line + 1}` : 'macro-included file'}`,
+                    parameters: (sym.parameters || []).map(p => ({ label: p, description: '' }))
+                };
+            }
         }
     }
     if (metadata) {
@@ -201,16 +210,22 @@ connection.onHover((params) => {
         end++;
     const symbol = lineText.substring(start, end);
     let metadata = metadata_js_1.HANK_STDLIB_METADATA[symbol];
-    const local = documentSymbols.get(params.textDocument.uri);
+    const defs = documentDefinitions.get(params.textDocument.uri);
     if (!metadata) {
-        if (local && local[symbol]) {
-            const sym = local[symbol];
-            const origin = sym.isMacro ? `macro-included file` : `line ${sym.line}`;
-            metadata = {
-                signature: sym.kind === 'Task' ? `${sym.name}(${(sym.parameters || []).join(', ')})` : sym.name,
-                description: `Local ${sym.kind.toLowerCase()} defined in ${origin}`,
-                notes: sym.notes || []
-            };
+        if (defs) {
+            const visible = defs.filter(d => d.name === symbol &&
+                params.position.line >= d.scopeRange.start.line &&
+                params.position.line <= d.scopeRange.end.line);
+            visible.sort((a, b) => (a.scopeRange.end.line - a.scopeRange.start.line) - (b.scopeRange.end.line - b.scopeRange.start.line));
+            const sym = visible[0];
+            if (sym) {
+                const origin = sym.uri === params.textDocument.uri ? `line ${sym.range.start.line + 1}` : `macro-included file`;
+                metadata = {
+                    signature: sym.kind === 'Task' ? `${sym.name}(${(sym.parameters || []).join(', ')})` : sym.name,
+                    description: `Local ${sym.kind.toLowerCase()} defined in ${origin}`,
+                    notes: sym.notes || []
+                };
+            }
         }
     }
     // Check for unreachable code
@@ -260,16 +275,21 @@ connection.onDefinition((params) => {
     while (end < lineText.length && /[a-zA-Z0-9_]/.test(lineText[end]))
         end++;
     const symbol = lineText.substring(start, end);
-    const local = documentSymbols.get(params.textDocument.uri);
-    if (local && local[symbol]) {
-        const sym = local[symbol];
-        return {
-            uri: sym.uri,
-            range: {
-                start: { line: sym.line - 1, character: sym.column - 1 },
-                end: { line: sym.line - 1, character: sym.column + sym.name.length - 1 }
-            }
-        };
+    const defs = documentDefinitions.get(params.textDocument.uri);
+    if (defs) {
+        // Find the specific definition that covers this cursor position
+        const visible = defs.filter(d => d.name === symbol &&
+            params.position.line >= d.scopeRange.start.line &&
+            params.position.line <= d.scopeRange.end.line);
+        // Prioritize the definition with the smallest scope (most local)
+        visible.sort((a, b) => (a.scopeRange.end.line - a.scopeRange.start.line) - (b.scopeRange.end.line - b.scopeRange.start.line));
+        const sym = visible[0];
+        if (sym) {
+            return {
+                uri: sym.uri,
+                range: sym.range
+            };
+        }
     }
     return null;
 });
@@ -329,7 +349,7 @@ function valToString(v) {
 async function validateTextDocument(textDocument) {
     const text = textDocument.getText();
     const diagnostics = [];
-    const localSymbols = {};
+    const definitions = [];
     try {
         const lexer = new Lexer_js_1.Lexer(text, textDocument.uri);
         const tokens = lexer.tokenize();
@@ -352,10 +372,9 @@ async function validateTextDocument(textDocument) {
                     throw err;
                 }
                 const content = fs.readFileSync(targetPath, 'utf-8');
-                const subLexer = new Lexer_js_1.Lexer(content);
+                const subLexer = new Lexer_js_1.Lexer(content, `file://${targetPath.replace(/\\/g, '/')}`);
                 const subTokens = subLexer.tokenize();
                 const targetUri = targetPath.startsWith('/') ? `file://${targetPath}` : `file:///${targetPath.replace(/\\/g, '/')}`;
-                // CRITICAL: Pass a NEW resolver that is relative to the TARGET file
                 const subParser = new Parser_js_1.Parser(subTokens, targetUri, createResolver(targetUri));
                 return subParser.parse();
             };
@@ -363,48 +382,49 @@ async function validateTextDocument(textDocument) {
         const parser = new Parser_js_1.Parser(tokens, textDocument.uri, createResolver(textDocument.uri));
         const ast = parser.parse();
         // Walk AST to extract symbols with scope tracking
-        const scopeStack = [new Set()];
         const docDeadCode = [];
-        const isDefined = (name) => {
+        const scopeStack = [new Set()];
+        const isDefinedAt = (name) => {
             for (let i = scopeStack.length - 1; i >= 0; i--) {
                 if (scopeStack[i].has(name))
                     return true;
             }
             return false;
         };
-        const walk = (node, currentUri) => {
+        const walk = (node, currentScope) => {
             if (!node)
                 return false;
+            const nodeFilename = node.td.filename || textDocument.uri;
             switch (node.kind) {
                 case 'Block':
                     scopeStack.push(new Set());
+                    const blockRange = {
+                        start: { line: node.td.line - 1, character: node.td.column - 1 },
+                        end: { line: node.td.line + 9999, character: 999 }
+                    };
                     let blockReturns = false;
-                    for (let i = 0; i < node.stmts.length; i++) {
-                        const stmt = node.stmts[i];
-                        if (blockReturns) {
-                            // Only mark as dead code if it's in the primary file being edited
-                            if (currentUri === textDocument.uri) {
-                                docDeadCode.push({
-                                    start: { line: stmt.td.line - 1, character: stmt.td.column - 1 },
-                                    end: { line: stmt.td.line - 1, character: 999 }
-                                });
-                            }
+                    for (const stmt of node.stmts) {
+                        if (blockReturns && nodeFilename === textDocument.uri) {
+                            docDeadCode.push({
+                                start: { line: stmt.td.line - 1, character: stmt.td.column - 1 },
+                                end: { line: stmt.td.line - 1, character: 999 }
+                            });
                         }
-                        if (walk(stmt, currentUri))
+                        if (walk(stmt, blockRange))
                             blockReturns = true;
                     }
                     scopeStack.pop();
                     return blockReturns;
                 case 'Assign':
                     const notes = [];
-                    // Analyze RHS first (Evaluate)
+                    // Semantic Notes (Shadowing/Void)
                     if (node.value.kind === 'Ident') {
                         const rhsName = node.value.name;
                         if (rhsName === node.name) {
-                            if (!isDefined(rhsName) && !metadata_js_1.HANK_STDLIB_METADATA[rhsName]) {
+                            if (!isDefinedAt(rhsName) && !metadata_js_1.HANK_STDLIB_METADATA[rhsName]) {
                                 notes.push(`**Evaluate-Then-Bind**: The right-side '${rhsName}' was not found in any scope and evaluated to **Void**. This value is now bound to the local identifier '${rhsName}'.`);
                             }
-                            else if (isDefined(rhsName)) {
+                            else if (isDefinedAt(rhsName)) {
                                 notes.push(`**Shadowing**: This captures the value of '${rhsName}' from a parent scope. Changes to this local variable will not affect the original.`);
                             }
                         }
@@ -412,84 +432,77 @@ async function validateTextDocument(textDocument) {
                     // Task detection logic
                     let isTask = false;
                     let parameters = undefined;
-                    let sourceUri = node.td.filename || currentUri;
-                    let sourceLine = node.td.line;
-                    let sourceCol = node.td.column;
-                    let isMacro = false;
-                    if (node.value.kind === 'FuncDef') {
-                        isTask = true;
-                        parameters = node.value.params.map((p) => p.name);
-                        // If the FuncDef has a different filename, it came from a macro
-                        if (node.value.td.filename && node.value.td.filename !== currentUri) {
-                            sourceUri = node.value.td.filename;
-                            sourceLine = node.value.td.line;
-                            sourceCol = node.value.td.column;
-                            isMacro = true;
-                        }
-                    }
-                    else if (node.value.kind === 'Block') {
-                        // Check if it's a macro block that results in a Task
-                        const lastStmt = node.value.stmts[node.value.stmts.length - 1];
-                        if (lastStmt && lastStmt.kind === 'FuncDef') {
+                    let defUri = nodeFilename;
+                    let defLine = node.td.line;
+                    let defCol = node.td.column;
+                    const checkTask = (val) => {
+                        if (val.kind === 'FuncDef') {
                             isTask = true;
-                            parameters = lastStmt.params.map((p) => p.name);
-                            if (lastStmt.td.filename && lastStmt.td.filename !== currentUri) {
-                                sourceUri = lastStmt.td.filename;
-                                sourceLine = lastStmt.td.line;
-                                sourceCol = lastStmt.td.column;
-                                isMacro = true;
-                            }
+                            parameters = val.params.map(p => p.name);
+                            defUri = val.td.filename || defUri;
+                            defLine = val.td.line;
+                            defCol = val.td.column;
                         }
-                    }
-                    localSymbols[node.name] = {
+                        else if (val.kind === 'Block') {
+                            const last = val.stmts[val.stmts.length - 1];
+                            if (last)
+                                checkTask(last);
+                        }
+                    };
+                    checkTask(node.value);
+                    definitions.push({
                         name: node.name,
                         kind: isTask ? 'Task' : 'Variable',
                         parameters,
-                        line: sourceLine,
-                        column: sourceCol,
-                        uri: sourceUri,
-                        isMacro,
+                        uri: defUri,
+                        range: {
+                            start: { line: defLine - 1, character: defCol - 1 },
+                            end: { line: defLine - 1, character: defCol + node.name.length - 1 }
+                        },
+                        scopeRange: currentScope,
                         notes: notes.length > 0 ? notes : undefined
-                    };
-                    const rhsReturns = walk(node.value, currentUri);
+                    });
+                    const rhsReturns = walk(node.value, currentScope);
                     // Bind LHS to current scope
                     scopeStack[scopeStack.length - 1].add(node.name);
                     return rhsReturns;
                 case 'FuncDef':
                     scopeStack.push(new Set(node.params.map(p => p.name)));
-                    walk(node.body, currentUri);
+                    const funcRange = {
+                        start: { line: node.td.line - 1, character: node.td.column - 1 },
+                        end: { line: node.td.line + 9999, character: 999 }
+                    };
+                    walk(node.body, funcRange);
                     scopeStack.pop();
                     return false;
                 case 'UnOp':
-                    walk(node.target, currentUri);
+                    walk(node.target, currentScope);
                     return node.op === '^';
                 case 'FlowControl':
-                    walk(node.condition, currentUri);
-                    walk(node.success, currentUri);
+                    walk(node.condition, currentScope);
+                    walk(node.success, currentScope);
                     if (node.fallback)
-                        walk(node.fallback, currentUri);
+                        walk(node.fallback, currentScope);
                     if (node.rescue)
-                        walk(node.rescue, currentUri);
+                        walk(node.rescue, currentScope);
                     return false;
                 case 'FuncCall':
-                    walk(node.target, currentUri);
-                    node.args.forEach(a => walk(a, currentUri));
+                    walk(node.target, currentScope);
+                    node.args.forEach(a => walk(a, currentScope));
                     return false;
                 case 'Array':
-                    node.items.forEach(a => walk(a, currentUri));
+                    node.items.forEach(a => walk(a, currentScope));
                     return false;
                 case 'Map':
-                    node.fields.forEach(a => walk(a, currentUri));
+                    node.fields.forEach(a => walk(a, currentScope));
                     return false;
-                case 'Ident':
-                case 'Literal':
-                case 'Error':
+                default:
                     return false;
             }
-            return false;
         };
-        walk(ast, textDocument.uri);
-        documentSymbols.set(textDocument.uri, localSymbols);
+        const globalScope = { start: { line: 0, character: 0 }, end: { line: 9999, character: 999 } };
+        walk(ast, globalScope);
+        documentDefinitions.set(textDocument.uri, definitions);
         deadCodeRanges.set(textDocument.uri, docDeadCode);
     }
     catch (e) {
