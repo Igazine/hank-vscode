@@ -58,7 +58,7 @@
         "test": "node ./client/out/test/runTest.js"
     },
     "devDependencies": {
-        "esbuild": "^0.20.1",
+        "esbuild": "^0.25.0",
         "typescript": "^5.1.3"
     }
 }
