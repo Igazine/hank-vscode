@@ -4,6 +4,7 @@
     "description": "VSCode support for the Hank symbolic orchestration language.",
     "version": "0.1.0",
     "publisher": "Igazine",
+    "license": "MIT",
     "engines": {
         "vscode": "^1.80.0"
     },
