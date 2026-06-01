@@ -23,7 +23,6 @@ Hank is a purely symbolic, instruction-oriented embeddable language designed for
 
 -   **Main Repository**: [Igazine/hank](https://github.com/Igazine/hank)
 -   **Documentation**: [Hank Docs](https://igazine.github.io/hank-docs/)
--   **Standard Library Spec**: [STDLIB.md](https://github.com/Igazine/hank/blob/main/specs/STDLIB.md)
 
 ## License
 
